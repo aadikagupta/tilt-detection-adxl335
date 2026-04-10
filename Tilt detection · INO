@@ -1,0 +1,163 @@
+/*
+ * Tilt Detection using ADXL335 Analog Accelerometer
+ * ===================================================
+ * Reads the X, Y, Z analog voltage outputs of the ADXL335
+ * 3-axis accelerometer and determines tilt direction.
+ *
+ * The ADXL335 outputs a resting voltage of ~1.65V (mid-supply)
+ * on each axis. Tilting the sensor shifts this voltage up or down
+ * proportionally to the acceleration due to gravity on that axis.
+ *
+ * This sketch:
+ *   1. Reads raw analog values from X, Y, Z pins
+ *   2. Converts them to voltage (0–3.3V range)
+ *   3. Converts voltage to acceleration in g (gravitational units)
+ *   4. Determines tilt direction and drives LED indicators
+ *   5. Replicates the 2-bit digital output of the IC741 comparator circuit
+ *
+ * Hardware:
+ *   - Arduino Uno (ATmega328, 5V)
+ *   - ADXL335 3-axis analog accelerometer
+ *   - 4x LEDs with 220Ω resistors (Tilt Left, Tilt Right, Tilt Fwd, Tilt Back)
+ *   - Optional: IC741 op-amp comparator circuit (hardware implementation)
+ *
+ * Wiring:
+ *   ADXL335 VCC  → Arduino 3.3V
+ *   ADXL335 GND  → Arduino GND
+ *   ADXL335 XOUT → Arduino A0
+ *   ADXL335 YOUT → Arduino A1
+ *   ADXL335 ZOUT → Arduino A2
+ *   LED_LEFT     → Arduino D5 (via 220Ω resistor)
+ *   LED_RIGHT    → Arduino D6 (via 220Ω resistor)
+ *   LED_FORWARD  → Arduino D7 (via 220Ω resistor)
+ *   LED_BACK     → Arduino D8 (via 220Ω resistor)
+ *
+ * Author: Aadika Gupta
+ * Project: B.Sc. Electronics, Christ University (2022–2023)
+ */
+
+// ─────────────────────────────────────────────────────────
+// PIN DEFINITIONS
+// ─────────────────────────────────────────────────────────
+
+// ADXL335 analog output pins
+const int X_PIN = A0;  // X-axis voltage output
+const int Y_PIN = A1;  // Y-axis voltage output
+const int Z_PIN = A2;  // Z-axis voltage output
+
+// LED indicator pins — replicate the 2-bit comparator output visually
+const int LED_LEFT    = 5;  // Lights when tilted left  (X axis negative)
+const int LED_RIGHT   = 6;  // Lights when tilted right (X axis positive)
+const int LED_FORWARD = 7;  // Lights when tilted forward (Y axis positive)
+const int LED_BACK    = 8;  // Lights when tilted back    (Y axis negative)
+
+
+// ─────────────────────────────────────────────────────────
+// CALIBRATION CONSTANTS
+// ─────────────────────────────────────────────────────────
+
+// The ADXL335 runs on 3.3V, but Arduino ADC reads up to 5V (1023 counts)
+// So we use 3.3V as our reference for voltage conversion
+const float ADC_REF_VOLTAGE = 3.3;   // Volts — ADXL335 supply voltage
+const int   ADC_RESOLUTION  = 1023;  // Arduino Uno 10-bit ADC max value
+
+// ADXL335 sensitivity: 300 mV per g (at 3.3V supply)
+// Zero-g resting voltage: ~1.65V (half of 3.3V supply)
+const float SENSITIVITY   = 0.300;  // Volts per g
+const float ZERO_G_OFFSET = 1.65;   // Resting voltage (flat, no tilt)
+
+// Tilt threshold in g — how much acceleration triggers a tilt detection
+// 0.3g means the board must tilt roughly 17° before an LED lights
+// Lower this value for more sensitivity, raise it to reduce false triggers
+const float TILT_THRESHOLD = 0.3;
+
+// How often to sample (milliseconds)
+const int SAMPLE_INTERVAL = 100;
+
+
+// ─────────────────────────────────────────────────────────
+// SETUP — runs once on power-on
+// ─────────────────────────────────────────────────────────
+
+void setup() {
+  Serial.begin(9600);  // Open serial monitor to watch live readings
+
+  // Set LED pins as outputs
+  pinMode(LED_LEFT,    OUTPUT);
+  pinMode(LED_RIGHT,   OUTPUT);
+  pinMode(LED_FORWARD, OUTPUT);
+  pinMode(LED_BACK,    OUTPUT);
+
+  // Start with all LEDs off
+  digitalWrite(LED_LEFT,    LOW);
+  digitalWrite(LED_RIGHT,   LOW);
+  digitalWrite(LED_FORWARD, LOW);
+  digitalWrite(LED_BACK,    LOW);
+
+  Serial.println("=== Tilt Detection — ADXL335 ===");
+  Serial.println("Monitoring X, Y, Z axes...");
+  Serial.println("Tilt threshold: 0.3g (~17 degrees)");
+  Serial.println("─────────────────────────────────");
+  Serial.println("Axis_X(g)   Axis_Y(g)   Axis_Z(g)   Direction");
+}
+
+
+// ─────────────────────────────────────────────────────────
+// LOOP — runs continuously after setup
+// ─────────────────────────────────────────────────────────
+
+void loop() {
+
+  // Step 1: Read raw ADC values from each axis (0–1023)
+  int rawX = analogRead(X_PIN);
+  int rawY = analogRead(Y_PIN);
+  int rawZ = analogRead(Z_PIN);
+
+  // Step 2: Convert raw ADC reading to voltage
+  // Formula: voltage = (raw / 1023) × 3.3V
+  float voltX = (rawX / (float)ADC_RESOLUTION) * ADC_REF_VOLTAGE;
+  float voltY = (rawY / (float)ADC_RESOLUTION) * ADC_REF_VOLTAGE;
+  float voltZ = (rawZ / (float)ADC_RESOLUTION) * ADC_REF_VOLTAGE;
+
+  // Step 3: Convert voltage to acceleration in g
+  // Formula: g = (voltage - zero_g_offset) / sensitivity
+  // At rest (flat): each axis reads ~0g (except Z which reads ~1g due to gravity)
+  float gX = (voltX - ZERO_G_OFFSET) / SENSITIVITY;
+  float gY = (voltY - ZERO_G_OFFSET) / SENSITIVITY;
+  float gZ = (voltZ - ZERO_G_OFFSET) / SENSITIVITY;
+
+  // Step 4: Determine tilt direction by comparing g values to threshold
+  // This replicates the role of the IC741 comparator in the hardware circuit —
+  // the comparator compares the axis voltage against a reference and switches
+  // its output HIGH or LOW based on which side of the threshold the input is on.
+
+  bool tiltLeft    = (gX < -TILT_THRESHOLD);  // Negative X = tilted left
+  bool tiltRight   = (gX >  TILT_THRESHOLD);  // Positive X = tilted right
+  bool tiltForward = (gY >  TILT_THRESHOLD);  // Positive Y = tilted forward
+  bool tiltBack    = (gY < -TILT_THRESHOLD);  // Negative Y = tilted back
+
+  // Step 5: Drive LED outputs based on tilt detection
+  digitalWrite(LED_LEFT,    tiltLeft    ? HIGH : LOW);
+  digitalWrite(LED_RIGHT,   tiltRight   ? HIGH : LOW);
+  digitalWrite(LED_FORWARD, tiltForward ? HIGH : LOW);
+  digitalWrite(LED_BACK,    tiltBack    ? HIGH : LOW);
+
+  // Step 6: Determine readable direction label for serial output
+  String direction = "Flat";
+  if      (tiltLeft)    direction = "LEFT";
+  else if (tiltRight)   direction = "RIGHT";
+  else if (tiltForward) direction = "FORWARD";
+  else if (tiltBack)    direction = "BACK";
+
+  // Step 7: Print live readings to Serial Monitor
+  Serial.print("X: ");
+  Serial.print(gX, 2);  // 2 decimal places
+  Serial.print("g     Y: ");
+  Serial.print(gY, 2);
+  Serial.print("g     Z: ");
+  Serial.print(gZ, 2);
+  Serial.print("g     → ");
+  Serial.println(direction);
+
+  delay(SAMPLE_INTERVAL);  // Wait before next reading
+}
